@@ -35,14 +35,14 @@ macOS install command: `brew install gphoto2 ffmpeg`
 ## Build and run
 
 ```
-cd canon-settings
+cd openeos
 cargo build --release
-./target/release/canon-settings
+./target/release/openeos
 ```
 
 ## Add a launcher on Linux
 
-1. Copy `canon-settings/target/release/canon-settings` to `~/.local/bin/openeos`.
+1. Copy `openeos/target/release/openeos` to `~/.local/bin/`.
 2. Copy `openeos.desktop` to `~/.local/share/applications/`.
 
 Your application launcher then lists OpenEOS.
@@ -53,7 +53,7 @@ The webcam function writes video to `/dev/video10`. Load the `v4l2loopback` modu
 
 1. Copy `v4l2loopback-load.conf` to `/etc/modules-load.d/v4l2loopback.conf`.
 2. Copy `v4l2loopback-options.conf` to `/etc/modprobe.d/v4l2loopback.conf`.
-3. Restart the computer, or run `sudo modprobe v4l2loopback exclusive_caps=1 card_label="Canon 80D" video_nr=10`.
+3. Restart the computer, or run `sudo modprobe v4l2loopback exclusive_caps=1 card_label="OpenEOS" video_nr=10`.
 
 ## Use the app
 
@@ -61,12 +61,12 @@ The webcam function writes video to `/dev/video10`. Load the `v4l2loopback` modu
 2. Start the app. The app reads the camera settings.
 3. Select a tab to see a group of settings. Select the star next to a setting to add it to Favorites.
 4. Select **Live view** to see the camera picture.
-5. Select **Capture** to take a photo. The app saves the file in `~/Pictures/Canon80`.
+5. Select **Capture** to take a photo. The app saves the file in `~/Pictures/OpenEOS`.
 6. Select **Webcam** to send the camera picture to other programs.
 
 The camera saves RAW files only when its Image Format setting is RAW. If the setting is a JPEG format, the app tells you.
 
-The app saves your favorites in `~/.config/canon-settings/favorites`.
+The app saves your favorites in `~/.config/openeos/favorites`. If you used an earlier version, the app moves your settings from `~/.config/canon-settings` the first time it starts.
 
 ### Webcam on macOS
 
