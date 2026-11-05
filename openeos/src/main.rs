@@ -1,4 +1,4 @@
-//! canon-settings: every gphoto2 camera setting in one window. Pauses the webcam while open.
+//! OpenEOS: every gphoto2 camera setting in one window, plus live view, capture and a webcam feed.
 use eframe::egui;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -103,7 +103,7 @@ const MAC_FEED: &str = "udp://127.0.0.1:5600?pkt_size=65000";
 /// runs, so it is stopped (Ctrl-C style, or the 80D hangs) before any other gphoto2 call.
 /// Every frame is also written to `sink` (the webcam's ffmpeg), which survives stream restarts.
 struct Stream {
-    pid: u32,
+    child: Child,
     frames: Receiver<egui::ColorImage>,
     reader: std::thread::JoinHandle<()>,
 }
@@ -116,7 +116,6 @@ impl Stream {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|e| format!("cannot run gphoto2 ({e}). Install: {}", install_hint()))?;
-        let pid = child.id();
         let mut out = child.stdout.take().unwrap();
         let (tx, frames) = channel();
         let ctx = ctx.clone();
@@ -141,13 +140,22 @@ impl Stream {
                     }
                 }
             }
-            _ = child.wait();
         });
-        Ok(Stream { pid, frames, reader })
+        Ok(Stream { child, frames, reader })
     }
 
-    fn stop(self) {
-        _ = Command::new("kill").args(["-INT", &self.pid.to_string()]).status();
+    /// The Child is only reaped here, so its PID still names our gphoto2 when it is signalled.
+    /// If gphoto2 ignores the interrupt, it is killed after a few seconds so the app cannot hang.
+    fn stop(mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            _ = Command::new("kill").args(["-INT", &self.child.id().to_string()]).status();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            while matches!(self.child.try_wait(), Ok(None)) && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ = self.child.kill();
+        }
+        _ = self.child.wait();
         _ = self.reader.join();
     }
 }
@@ -197,8 +205,16 @@ const SEED_FAVORITES: [&str; 7] = [
 ];
 
 fn config_file(name: &str) -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("canon-settings").join(name))
+    // XDG spec: an empty or relative XDG_CONFIG_HOME is ignored.
+    let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute());
+    let base = xdg.or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+    let dir = base.join("openeos");
+    // Earlier versions were called canon-settings: move their favorites and Wi-Fi address over once.
+    let old = base.join("canon-settings");
+    if !dir.exists() && old.is_dir() {
+        _ = std::fs::rename(&old, &dir);
+    }
+    Some(dir.join(name))
 }
 
 fn favorites_file() -> Option<PathBuf> {
@@ -280,12 +296,17 @@ impl App {
 
     /// Switches between USB (blank) and Wi-Fi: ends the stream so it restarts on the new link, then reloads.
     fn set_ip(&mut self, ctx: &egui::Context) {
+        if self.job.is_some() {
+            return;
+        }
         let ip = self.ip_edit.trim().to_string();
         if ip.starts_with('-') || ip.contains(char::is_whitespace) {
             self.status = "Not a valid address".into();
             return;
         }
-        self.preview.take().map(Stream::stop);
+        if let Some(p) = self.preview.take() {
+            p.stop();
+        }
         self.texture = None;
         self.settings.clear();
         self.ip = ip;
@@ -299,7 +320,9 @@ impl App {
         self.status = "Reading camera…".into();
         let (stream, ip) = (self.preview.take(), self.ip.clone());
         self.job = Some((Job::Load, spawn(ctx, move || {
-            stream.map(Stream::stop);
+            if let Some(p) = stream {
+                p.stop();
+            }
             gphoto2(&ip, &["--list-all-config"])
         })));
     }
@@ -309,7 +332,9 @@ impl App {
         let arg = format!("{}={value}", self.settings[i].path);
         let (stream, ip) = (self.preview.take(), self.ip.clone());
         self.job = Some((Job::Set(i, value), spawn(ctx, move || {
-            stream.map(Stream::stop);
+            if let Some(p) = stream {
+                p.stop();
+            }
             gphoto2(&ip, &["--set-config-value", &arg])
         })));
     }
@@ -321,23 +346,30 @@ impl App {
             self.status = "no HOME, cannot choose where to save".into();
             return;
         };
-        let dir = PathBuf::from(home).join("Pictures/Canon80");
+        let dir = PathBuf::from(home).join("Pictures/OpenEOS");
         self.status = "Capturing…".into();
         let (stream, ip) = (self.preview.take(), self.ip.clone());
         self.job = Some((Job::Capture, spawn(ctx, move || {
-            stream.map(Stream::stop);
+            if let Some(p) = stream {
+                p.stop();
+            }
             std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
             let pattern = dir.join("%Y%m%d-%H%M%S.%C");
             let out = gphoto2(&ip, &["--capture-image-and-download", "--keep", "--filename", &pattern.to_string_lossy()])?;
-            let saved = out.lines().find_map(|l| l.strip_prefix("Saving file as ")).ok_or("capture gave no file")?;
-            Ok(if saved.to_lowercase().ends_with(".jpg") { format!("{saved} (JPEG only: set Image Format to RAW in the Image tab)") } else { saved.into() })
+            let saved: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("Saving file as ")).collect();
+            if saved.is_empty() {
+                return Err("capture gave no file".into());
+            }
+            let list = saved.join(", ");
+            let jpeg_only = saved.iter().all(|f| f.to_lowercase().ends_with(".jpg"));
+            Ok(if jpeg_only { format!("{list} (JPEG only: set Image Format to RAW in the Image tab)") } else { list })
         })));
     }
 
     fn start_webcam(&mut self) -> Result<(), String> {
         let output: Vec<&str> = match std::env::consts::OS {
             "linux" if !std::path::Path::new(VIDEO_DEV).exists() => {
-                return Err(format!("{VIDEO_DEV} missing: sudo modprobe v4l2loopback exclusive_caps=1 card_label=\"Canon 80D\" video_nr=10 (or install: {})", install_hint()));
+                return Err(format!("{VIDEO_DEV} missing: sudo modprobe v4l2loopback exclusive_caps=1 card_label=\"OpenEOS\" video_nr=10 (or install: {})", install_hint()));
             }
             "linux" => vec!["-vf", "format=yuv420p", "-f", "v4l2", VIDEO_DEV],
             "macos" => vec!["-fps_mode", "vfr", "-q:v", "5", "-f", "mjpeg", MAC_FEED],
@@ -383,7 +415,9 @@ impl App {
         self.want_preview = !self.want_preview;
         if !self.want_preview {
             self.texture = None;
-            self.preview.take().map(Stream::stop);
+            if let Some(p) = self.preview.take() {
+                p.stop();
+            }
         }
         self.sync_stream(ctx);
     }
@@ -399,13 +433,15 @@ impl App {
         if let Some(p) = &self.preview {
             // Reader thread ends when gphoto2 exits (camera gone, error).
             if p.reader.is_finished() {
-                self.preview.take().map(Stream::stop);
+                if let Some(p) = self.preview.take() {
+                    p.stop();
+                }
                 self.want_preview = false;
                 self.texture = None;
                 self.stop_webcam();
                 self.status = "Camera stream stopped (busy or unplugged?)".into();
-            } else if !wanted {
-                self.preview.take().map(Stream::stop);
+            } else if !wanted && let Some(p) = self.preview.take() {
+                p.stop();
             }
         } else if wanted && self.job.is_none() {
             match Stream::start(ctx, &self.ip, self.sink.clone(), self.show.clone()) {
@@ -418,7 +454,8 @@ impl App {
             }
         }
         if let Some(p) = &self.preview {
-            if let Some(img) = p.frames.try_iter().last() {
+            // Drain always; frames queued before Live view was turned off must not bring the panel back.
+            if let Some(img) = p.frames.try_iter().last().filter(|_| self.want_preview) {
                 match &mut self.texture {
                     Some(t) => t.set(img, egui::TextureOptions::LINEAR),
                     None => self.texture = Some(ctx.load_texture("preview", img, egui::TextureOptions::LINEAR)),
@@ -599,18 +636,20 @@ impl eframe::App for App {
         }
     }
 
-    /// Plugging the camera in starts the webcam again; the switch's state is otherwise left as is.
+    /// Ends gphoto2 and ffmpeg so the camera and the video device are free for other programs.
     fn on_exit(&mut self) {
-        self.preview.take().map(Stream::stop);
+        if let Some(p) = self.preview.take() {
+            p.stop();
+        }
         self.stop_webcam();
     }
 }
 
 fn main() -> eframe::Result {
     eframe::run_native(
-        "canon-settings",
+        "openeos",
         eframe::NativeOptions {
-            viewport: egui::ViewportBuilder::default().with_title("Canon settings").with_app_id("canon-settings").with_inner_size([560.0, 720.0]),
+            viewport: egui::ViewportBuilder::default().with_title("OpenEOS").with_app_id("openeos").with_inner_size([560.0, 720.0]),
             ..Default::default()
         },
         Box::new(|cc| Ok(Box::new(App::new(&cc.egui_ctx)))),

@@ -6,4 +6,4 @@ Exec=openeos
 Icon=camera-photo
 Terminal=false
 Categories=Graphics;Photography;
-StartupWMClass=canon-settings
+StartupWMClass=openeos
