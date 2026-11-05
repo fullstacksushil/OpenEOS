@@ -1,0 +1,8 @@
+[package]
+name = "canon-settings"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.37"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
