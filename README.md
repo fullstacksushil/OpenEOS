@@ -2,6 +2,8 @@
 
 OpenEOS is a desktop app for a Canon EOS camera. It uses the gphoto2 program to talk to the camera.
 
+![OpenEOS with live view and the Favorites tab](docs/screenshot.png)
+
 The app has these functions:
 
 - Change camera settings in tabs. Mark the settings you use most as favorites.
