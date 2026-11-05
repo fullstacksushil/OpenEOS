@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=OpenEOS
+Comment=Control a Canon EOS camera: settings, live view, capture, webcam
+Exec=openeos
+Icon=camera-photo
+Terminal=false
+Categories=Graphics;Photography;
+StartupWMClass=canon-settings

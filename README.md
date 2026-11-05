@@ -40,6 +40,13 @@ cargo build --release
 ./target/release/canon-settings
 ```
 
+## Add a launcher on Linux
+
+1. Copy `canon-settings/target/release/canon-settings` to `~/.local/bin/openeos`.
+2. Copy `openeos.desktop` to `~/.local/share/applications/`.
+
+Your application launcher then lists OpenEOS.
+
 ## Prepare the webcam on Linux
 
 The webcam function writes video to `/dev/video10`. Load the `v4l2loopback` module with these steps:
